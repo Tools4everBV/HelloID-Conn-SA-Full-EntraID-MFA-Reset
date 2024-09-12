@@ -1,15 +1,15 @@
-# HelloID-Conn-SA-Full-Entra-ID-MFA-Reset
+# HelloID-Conn-SA-Full-EntraID-MFA-Reset
 
 > [!IMPORTANT]
 > This repository contains the connector and configuration code only. The implementer is responsible for acquiring the connection details such as username, password, certificate, etc. You might even need to sign a contract or agreement with the supplier before implementing this connector. Please contact the client's application manager to coordinate the connector requirements.
 
 <p align="center">
-  <img src="https://github.com/Tools4everBV/HelloID-Conn-SA-Full-Entra-ID-MFA-Reset/blob/main/Logo.png?raw=true">
+  <img src="https://github.com/Tools4everBV/HelloID-Conn-SA-Full-EntraID-MFA-Reset/blob/main/Logo.png?raw=true">
 </p>
 
 ## Table of contents
 
-- [HelloID-Conn-SA-Full-Entra-ID-MFA-Reset](#helloid-conn-sa-full-entra-id-mfa-reset)
+- [HelloID-Conn-SA-Full-EntraID-MFA-Reset](#helloid-conn-sa-full-entra-id-mfa-reset)
   - [Table of contents](#table-of-contents)
   - [Requirements](#requirements)
   - [Remarks](#remarks)
@@ -45,7 +45,7 @@
 ## Introduction
 
 #### Description
-_HelloID-Conn-SA-Full-Entra-ID-MFA-Reset_ is a template designed for use with HelloID Service Automation (SA) Delegated Forms. It can be imported into HelloID and customized according to your requirements. 
+_HelloID-Conn-SA-Full-EntraID-MFA-Reset_ is a template designed for use with HelloID Service Automation (SA) Delegated Forms. It can be imported into HelloID and customized according to your requirements. 
 
 By using this delegated form, you can reset all MFA methods of an EntraID user. The following options are available:
  1. Search and select the Entra ID user
