@@ -10,9 +10,6 @@ $userPrincipalName = $form.gridUsers.UserPrincipalName
 $id = $form.gridUsers.Id
 $displayName = $form.gridUsers.DisplayName
 
-# Debug
-# $id = '1b69b88a-5f6a-4010-84f2-ff4cabf5bd46'
-
 #region functions
 function Get-ErrorMessage {
     [CmdletBinding()]
