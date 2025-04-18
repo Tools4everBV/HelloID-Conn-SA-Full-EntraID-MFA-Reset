@@ -38,6 +38,7 @@
 ## Remarks
 - The following methods are supported in this template `microsoftAuthenticatorAuthenticationMethod` and `phoneAuthenticationMethod`. Other methods can be added by enriching the action script.
 - The default method should be removed last. But which method is default isn't reported by the graph API. For this reason, we retry removing a method one time. When retrying the method should be the last authentication method of the user and it will also be removed. When this also fails, an error is reported.
+- Changed the Get-Errormessage function and the task
 
 > [!IMPORTANT]
 > If your organization uses other methods then `microsoftAuthenticatorAuthenticationMethod` and `phoneAuthenticationMethod` you should add them. If not the task can't delete the default method `microsoftAuthenticatorAuthenticationMethod` or `phoneAuthenticationMethod`
