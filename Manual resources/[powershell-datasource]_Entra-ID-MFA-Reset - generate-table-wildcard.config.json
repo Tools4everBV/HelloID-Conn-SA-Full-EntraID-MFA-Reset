@@ -1,4 +1,4 @@
 {
-  "name": "Entra-ID-MFA-Reset | generate-table-wildcard",
-  "runInCloud": true
+    "name":  "Entra-ID-MFA-Reset | generate-table-wildcard",
+    "runInCloud":  true
 }

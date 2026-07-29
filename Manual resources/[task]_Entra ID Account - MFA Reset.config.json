@@ -1,4 +1,4 @@
 {
-  "name": "Entra ID Account - MFA Reset",
-  "runInCloud": true
+    "name":  "Entra ID Account - MFA Reset",
+    "runInCloud":  true
 }
