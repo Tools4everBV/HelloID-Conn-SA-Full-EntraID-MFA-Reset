@@ -2,95 +2,108 @@
 
 | :information_source: Information |
 | :------------------------------- |
-| This repository contains the connector and configuration code only. The implementer is responsible for acquiring the connection details such as username, password, certificate, etc. You might even need to sign a contract or agreement with the supplier before implementing this connector. Please contact the client's application manager to coordinate the connector requirements. |
+| This repository contains the connector and configuration code only. The implementer is responsible for acquiring the connection details such as certificate, tenant ID, and application ID. You might need administrator consent and to configure an App Registration in Microsoft Entra ID before implementing this connector. Please contact the client's application owner to coordinate the requirements. |
 
-<p align="center">
-  <img src="https://github.com/Tools4everBV/HelloID-Conn-SA-Full-EntraID-MFA-Reset/blob/main/Logo.png?raw=true">
-</p>
+## Description
 
-## Table of contents
+HelloID-Conn-SA-Full-EntraID-MFA-Reset is a delegated form designed for use with HelloID Service Automation (SA). It can be imported into HelloID and customized according to your requirements.
 
-- [HelloID-Conn-SA-Full-EntraID-MFA-Reset](#helloid-conn-sa-full-entra-id-mfa-reset)
-  - [Table of contents](#table-of-contents)
-  - [Requirements](#requirements)
-  - [Remarks](#remarks)
-  - [Introduction](#introduction)
-      - [Description](#description)
-      - [Endpoints](#endpoints)
-      - [Form Options](#form-options)
-      - [Task Actions](#task-actions)
-  - [Connector Setup](#connector-setup)
-    - [Variable Library - User Defined Variables](#variable-library---user-defined-variables)
-  - [Getting help](#getting-help)
-  - [HelloID docs](#helloid-docs)
+By using this delegated form, you can reset all configured MFA authentication methods for a Microsoft Entra ID user. The following options are available:
 
-## Requirements
-1. **HelloID Environment**:
-   - Set up your _HelloID_ environment.
-2. **Entra ID**:
-   - App registration with `API permissions` of the type `Application`:
-      -  `User.ReadWrite.All`
-      - `UserAuthenticationMethod.ReadWrite.All`
-   - The following information for the app registration is needed in HelloID:
-      - `Application (client) ID`
-      - `Directory (tenant) ID`
-      - `Secret Value`
+1. Search for and select the target Microsoft Entra ID user account (wildcard search by display name, UserPrincipalName, or mail).
+2. The task removes all configured authentication methods for the selected user account.
+
+## Getting started
+### Requirements
+
+#### App Registration & Certificate Setup
+
+Before implementing this connector, make sure to configure a Microsoft Entra ID App Registration. During the setup process, you'll create a new App Registration in the Entra portal, assign the necessary API permissions (such as user and authentication method read/write), and generate and assign a certificate.
+
+Follow the official Microsoft documentation for creating an App Registration and setting up certificate-based authentication:
+
+- [App-only authentication with certificate](https://learn.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps#set-up-app-only-authentication)
+
+#### HelloID-specific configuration
+
+Once you have completed the Microsoft setup and followed their best practices, configure the following HelloID-specific requirements.
+
+- **API Permissions** (Application permissions):
+  - `UserAuthenticationMethod.ReadWrite.All` - To manage user authentication methods
+  - `User.Read.All` - To read user information
+- **Certificate Base64 encoded string:**
+  - Base64 encoded string of the certificate assigned to the app registration. For instructions on creating the certificate and obtaining the base64 string, refer to our forum post: [Setting up a certificate for Microsoft Graph API in HelloID connectors](https://forum.helloid.com/forum/helloid-provisioning/5338-instruction-setting-up-a-certificate-for-microsoft-graph-api-in-helloid-connectors#post5338)
+
+
+### Connection settings
+
+The following global variables must be configured in HelloID when importing and configuring the delegated form.
+
+| Setting                        | Description                                                                | Mandatory |
+| ------------------------------ | -------------------------------------------------------------------------- | --------- |
+| EntraIdTenantId                | The unique identifier (ID) of the tenant in Microsoft Entra ID             | Yes       |
+| EntraIdAppId                   | The unique identifier (ID) of the App Registration in Microsoft Entra ID   | Yes       |
+| EntraIdCertificateBase64String | The Base64-encoded string representation of the app certificate            | Yes       |
+| EntraIdCertificatePassword     | The password associated with the app certificate                           | Yes       |
 
 ## Remarks
-- The following methods are supported in this template `microsoftAuthenticatorAuthenticationMethod` and `phoneAuthenticationMethod`. Other methods can be added by enriching the action script.
-- The default method should be removed last. But which method is default isn't reported by the graph API. For this reason, we retry removing a method one time. When retrying the method should be the last authentication method of the user and it will also be removed. When this also fails, an error is reported.
 
-> [!IMPORTANT]
-> If your organization uses other methods then `microsoftAuthenticatorAuthenticationMethod` and `phoneAuthenticationMethod` you should add them. If not the task can't delete the default method `microsoftAuthenticatorAuthenticationMethod` or `phoneAuthenticationMethod`
+### Supported Authentication Methods
 
-## Introduction
+The connector is configured to process the following authentication method types:
+- **Microsoft Authenticator** (`microsoftAuthenticatorAuthenticationMethod`)
+- **Phone Authentication** (`phoneAuthenticationMethod`)
+- **Email Authentication** (`emailAuthenticationMethod`)
 
-#### Description
-_HelloID-Conn-SA-Full-EntraID-MFA-Reset_ is a template designed for use with HelloID Service Automation (SA) Delegated Forms. It can be imported into HelloID and customized according to your requirements. 
+Additional authentication methods can be added by extending the `$authenticationMethodsConfig` hashtable at the top of the task script. For a complete list of supported authentication methods, refer to the [Microsoft Graph authentication methods overview](https://learn.microsoft.com/en-us/graph/api/resources/authenticationmethods-overview?view=graph-rest-1.0).
 
-By using this delegated form, you can reset all MFA methods of an EntraID user. The following options are available:
- 1. Search and select the Entra ID user
- 2. The task will remove all the configured authentication methods
+### Default Method Removal Retry
 
-#### Endpoints
-Entra Id provides a set of REST APIs that allow you to programmatically interact with its data. The API endpoints listed in the table below are used.
+The Microsoft Graph API does not explicitly indicate which authentication method is set as the user's default. When attempting to remove the default method, the API returns an error indicating it cannot be removed. 
 
-| Endpoint | Description                        |
-| -------- | ---------------------------------- |
-| users    | The user endpoint of the Graph API |
+The connector implements an automatic retry mechanism:
+1. On first attempt, all configured methods are removed
+2. If a method fails due to being the default, it is marked for retry
+3. The connector automatically retries removal of failed methods (up to 5 retry attempts)
+4. On retry, the previously default method can typically be removed as another method has become the new default
 
-#### Form Options
-The following options are available in the form:
+This also handles the scenario where a phone number cannot be removed without first deleting an alternate mobile number.
 
-1. **Lookup user**:
-   - This Powershell data source runs an Entra ID Graph API query to search for matching Entra ID accounts.
+### Certificate-Based Authentication
 
-#### Task Actions
-The following actions will be performed based on user selections:
+The connector uses certificate-based authentication to generate JSON Web Tokens (JWT) for secure communication with Microsoft Graph API. The certificate is converted from a base64 string and used to sign the JWT assertion for OAuth2 authentication, providing enhanced security compared to client secret authentication.
 
-1. **Update UPN and Email in Active Directory**:
-   - The current authentication methods of the selected user are retrieved and are stored in `$phoneAuthenticatorMethod` and `$microsoftAuthenticatorMethod`
-   - If `$phoneAuthenticatorMethod` contains a value the `phoneMethods` will be removed. If it fails `$phoneAuthenticatorMethodSuccess` will be `$false`
-   - If `$microsoftAuthenticatorMethod` contains a value the `microsoftAuthenticatorMethods` will be removed. If it fails `$microsoftAuthenticatorMethodSuccess` will be `$false`
-   - If `$phoneAuthenticatorMethodSuccess` is `$false` the `phoneMethods` will be removed again. If it fails an error will be thrown
-   - If `$microsoftAuthenticatorMethodSuccess` is `$false` the `microsoftAuthenticatorMethods` will be removed again. If it fails an error will be thrown
+### Error Handling
 
-## Connector Setup
-### Variable Library - User Defined Variables
-The following user-defined variables are used by the connector. Ensure that you check and set the correct values required to connect to the API.
+- **Configurable Methods**: Only authentication methods defined in `$authenticationMethodsConfig` are processed. Other method types are automatically skipped.
+- **Retry Logic**: Methods that fail due to being the default or other temporary issues are automatically retried with a configurable maximum retry count.
+- **Comprehensive Logging**: All operations are logged with detailed audit messages indicating success or failure, including specific method types and user information.
 
-| Setting          | Description                                                     |
-| ---------------- | --------------------------------------------------------------- |
-| `EntraTenantId`  | The ID to the Tenant in Microsoft Entra ID                      |
-| `EntraAppId`     | The ID to the App Registration in Microsoft Entra ID            |
-| `EntraAppSecret` | The Client Secret to the App Registration in Microsoft Entra ID |
+## Development resources
+
+### API endpoints
+
+The following Microsoft Graph API endpoints are used by the connector:
+
+| Endpoint                                                                  | Description                              |
+| ------------------------------------------------------------------------- | ---------------------------------------- |
+| /v1.0/users                                                               | List users                               |
+| /v1.0/users/{id}/authentication/methods                                   | List user authentication methods         |
+| /v1.0/users/{id}/authentication/phoneMethods/{methodId}                   | Remove phone authentication method       |
+| /v1.0/users/{id}/authentication/microsoftAuthenticatorMethods/{methodId}  | Remove Microsoft Authenticator method    |
+
+### API documentation
+
+- [List users](https://learn.microsoft.com/en-us/graph/api/user-list)
+- [List authentication methods](https://learn.microsoft.com/en-us/graph/api/authentication-list-methods)
+- [Authentication methods overview](https://learn.microsoft.com/en-us/graph/api/resources/authenticationmethods-overview?view=graph-rest-1.0)
+- [Delete phoneAuthenticationMethod](https://learn.microsoft.com/en-us/graph/api/phoneauthenticationmethod-delete)
+- [Delete microsoftAuthenticatorAuthenticationMethod](https://learn.microsoft.com/en-us/graph/api/microsoftauthenticatorauthenticationmethod-delete)
 
 ## Getting help
-> [!TIP]
-> _For more information on Delegated Forms, please refer to our [documentation](https://docs.helloid.com/en/service-automation/delegated-forms.html) pages_.
 
-> [!TIP]
->  _If you need help, feel free to ask questions on our [forum](https://forum.helloid.com)_.
+> :bulb: **Tip:** For more information on Delegated Forms, please refer to our [documentation](https://docs.helloid.com/en/service-automation/delegated-forms.html) pages.
 
 ## HelloID docs
-The official HelloID documentation can be found at: https://docs.helloid.com/
+
+The official HelloID documentation can be found at: [https://docs.helloid.com/](https://docs.helloid.com/)

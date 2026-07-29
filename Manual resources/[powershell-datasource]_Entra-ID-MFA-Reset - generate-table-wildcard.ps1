@@ -1,5 +1,11 @@
-# Set TLS to accept TLS, TLS 1.1 and TLS 1.2
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
+# Variables configured in form
+$searchValue = $datasource.searchValue
+if ($searchValue -eq "*") {
+    $filter = "`$filter=displayName ne null" # Get all users
+}
+else {
+    $filter = "`$search=`"displayName:$searchValue`" OR `"userPrincipalName:$searchValue`" OR `"mail:$searchValue`""
+}
 
 # Global variables
 # Outcommented as these are set from Global Variables
@@ -9,35 +15,25 @@
 # $EntraIdCertificatePassword = ""
 
 # Fixed values
-$retryCount = 0
-$retryCountMax = 5
+$propertiesToSelect = @(
+    "id",
+    "userPrincipalName",
+    "displayName",
+    "mail",
+    "description",
+    "department",
+    "jobTitle",
+    "companyName",
+    "accountEnabled"
+) # Properties to select from Microsoft Graph API, comma separated
 
-# Authentication methods to process
-# For more information please check https://learn.microsoft.com/en-us/graph/api/resources/authenticationmethods-overview?view=graph-rest-1.0
-$authenticationMethodsConfig = @{
-    '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' = @{
-        Type   = 'microsoftAuthenticatorMethods'
-        Method = 'Microsoft Authenticator'
-    }
-    '#microsoft.graph.phoneAuthenticationMethod'                   = @{
-        Type   = 'phoneMethods'
-        Method = 'Phone Authentication'
-    }
-    '#microsoft.graph.emailAuthenticationMethod'                   = @{
-        Type   = 'emailMethods'
-        Method = 'Email Authentication'
-    }
-}
+# Enable TLS1.2
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 
 # Set debug logging
 $VerbosePreference = "SilentlyContinue"
 $InformationPreference = "Continue"
 $WarningPreference = "Continue"
-
-# Variables configured in form
-$userPrincipalName = $form.gridUsers.UserPrincipalName
-$id = $form.gridUsers.Id
-$displayName = $form.gridUsers.DisplayName
 
 #region functions
 function Resolve-MicrosoftGraphAPIError {
@@ -84,57 +80,6 @@ function Resolve-MicrosoftGraphAPIError {
             $httpErrorObj.FriendlyMessage = $httpErrorObj.ErrorDetails
         }
         Write-Output $httpErrorObj
-    }
-}
-
-function Remove-GraphAuthenticationMethod {
-    param (
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $Type,
-
-        [System.Collections.IDictionary]
-        $Headers,
-
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $UserId,
-
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $MethodId,
-
-        [ValidateNotNullOrEmpty()]
-        [bool]
-        $Retry
-    )
-
-    process {
-        try {
-            $splatParams = @{
-                Method  = 'Delete'
-                Uri     = "https://graph.microsoft.com/v1.0/users/$UserId/authentication/$Type/$MethodId"
-                Headers = $Headers
-            }
-            $null = Invoke-RestMethod @splatParams -Verbose:$false
-            # Success is true, no retry
-            return $true
-        }
-        catch {
-            if (($_.ErrorDetails.Message -like "*matches the user's current default authentication method*")) {
-                Write-Warning "Couldn't revoke authentication method [$Type] [$MethodId] for Entra ID user [$UserId]. Retrying"
-                # Success is false, retry
-                return $false
-            }
-            elseif (($_.ErrorDetails.Message -like "*without first deleting alternate mobile number*")) {
-                Write-Warning "Couldn't revoke authentication method [$Type] [$MethodId] for Entra ID user [$UserId]. Retrying"
-                # Success is false, retry
-                return $false
-            }
-            else {
-                Throw $_
-            }
-        }
     }
 }
 
@@ -197,6 +142,11 @@ function Get-MSEntraAccessToken {
         $signature = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($signatureInput), 'SHA256')
         $base64Signature = [System.Convert]::ToBase64String($signature).Replace('+', '-').Replace('/', '_').Replace('=', '')
 
+        # Ensure the certificate has a private key
+        if (-not $Certificate.HasPrivateKey -or -not $Certificate.PrivateKey) {
+            throw "The certificate does not have a private key."
+        }
+
         # Create the JWT token
         $jwtToken = "$($base64Header).$($base64Payload).$($base64Signature)"
 
@@ -249,12 +199,10 @@ function Get-MSEntraCertificate {
 }
 #endregion functions
 
-
 try {
     # Convert base64 certificate string to certificate object
     $actionMessage = "converting base64 certificate string to certificate object"
     $certificate = Get-MSEntraCertificate -CertificateBase64String $EntraIdCertificateBase64String -CertificatePassword $EntraIdCertificatePassword
-    Write-Verbose "Converted base64 certificate string to certificate object"
 
     # Create access token
     $actionMessage = "creating access token"
@@ -269,90 +217,41 @@ try {
         "ConsistencyLevel" = "eventual" # Needed to filter on specific attributes (https://docs.microsoft.com/en-us/graph/aad-advanced-queries)
     }
 
-    # Get authentication methods
-    $actionMessage = "getting authentication methods for user [$userPrincipalName] with id [$id]"
-
-    $splatParamsGetAuthenticator = @{
-        Method  = 'Get'
-        Uri     = "https://graph.microsoft.com/v1.0/users/$id/authentication/methods"
-        Headers = $headers
-    }
-    $responseGetAuthenticator = Invoke-RestMethod @splatParamsGetAuthenticator -Verbose:$false
-    Write-Information "Queried authentication methods for Entra ID user [$userPrincipalName] with id [$id]. Total result count: $(($responseGetAuthenticator.value | Measure-Object).Count)"
-
-    # Filter authenticators based on configured authentication methods
-    $configuredTypes = ($authenticationMethodsConfig.Values | ForEach-Object { $_.Method }) -join ', '
-    $actionMessage = "filtering authentication methods to configured types [$configuredTypes] for Entra ID user [$userPrincipalName] with id [$id]"
-    $authenticators = $responseGetAuthenticator.value | Where-Object { $authenticationMethodsConfig.ContainsKey($_.'@odata.type') }
-    Write-Information "Filtered authentication methods to configured types [$configuredTypes] for Entra ID user [$userPrincipalName] with id [$id]. Result count: $(($authenticators | Measure-Object).Count)"
-
-    # Delete authentication methods with retry logic
-    $actionMessage = "deleting authentication methods for user [$userPrincipalName] with id [$id]"
-    $authenticators | Add-Member -MemberType NoteProperty -Name "retry" -Value $false -Force
-    $authenticators | Add-Member -MemberType NoteProperty -Name "success" -Value $false -Force
+    # Get Microsoft Entra ID Users
+    # API docs: https://learn.microsoft.com/en-us/graph/api/user-list?view=graph-rest-1.0&tabs=http
+    $actionMessage = "querying Microsoft Entra ID Users matching filter [$filter]"
+    $microsoftEntraIDUsers = [System.Collections.ArrayList]@()
     do {
-        $doUntilSuccess = $true
-        foreach ($authenticator in $authenticators) {
-            $methodId = $authenticator.id
-
-            # Get authentication method configuration
-            $authConfig = $authenticationMethodsConfig[$authenticator.'@odata.type']
-            if ($null -ne $authConfig) {
-                $type = $authConfig.Type
-                $method = $authConfig.Method
-            }
-            else {
-                # If no configured method is found then skip (success = $true)
-                $authenticator.success = $true
-                continue
-            }
-
-            if (-not $authenticator.success) {
-                $actionMessage = "deleting current $method method for user with id [$($id)]"
-                $actionsNeeded = $true
-
-                $splatParamsDelAuthenticator = @{
-                    Type     = $type
-                    Headers  = $headers
-                    UserId   = $id
-                    MethodId = $methodId 
-                    Retry    = $authenticator.retry         
-                }
-
-                $authenticator.success = Remove-GraphAuthenticationMethod @splatParamsDelAuthenticator
-
-                if ($authenticator.success) {
-                    $Log = @{
-                        Action            = "DeleteResource" # optional. ENUM (undefined = default) 
-                        System            = "EntraID" # optional (free format text) 
-                        Message           = "Deleted current $method method for Entra ID user [$userPrincipalName] with id [$id]" # required (free format text) 
-                        IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
-                        TargetDisplayName = $displayName # optional (free format text) 
-                        TargetIdentifier  = $([string]$id) # optional (free format text) 
-                    }
-                    #send result back  
-                    Write-Information -Tags "Audit" -MessageData $log
-                }
-                else {
-                    $authenticator.retry = $true
-                    $retryCount++
-                    $doUntilSuccess = $false
-                }
-            }
+        $getMicrosoftEntraIDUsersSplatParams = @{
+            Uri         = "https://graph.microsoft.com/v1.0/users?$filter&`$select=$($propertiesToSelect -join ',')&`$top=999&`$count=true"
+            Headers     = $headers
+            Method      = "GET"
+            Verbose     = $false
+            ErrorAction = "Stop"
         }
-    } until ($doUntilSuccess -or $retryCount -gt $retryCountMax)
-
-    if ($actionsNeeded -ne $true) {
-        $Log = @{
-            Action            = "DeleteResource" # optional. ENUM (undefined = default) 
-            System            = "EntraID" # optional (free format text) 
-            Message           = "No authentication method found that needs to be deleted for Entra ID user [$userPrincipalName] with id [$id]" # required (free format text) 
-            IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
-            TargetDisplayName = $displayName # optional (free format text) 
-            TargetIdentifier  = $([string]$id) # optional (free format text) 
+        if (-not[string]::IsNullOrEmpty($getMicrosoftEntraIDUsersResponse.'@odata.nextLink')) {
+            $getMicrosoftEntraIDUsersSplatParams["Uri"] = $getMicrosoftEntraIDUsersResponse.'@odata.nextLink'
         }
-        #send result back  
-        Write-Information -Tags "Audit" -MessageData $log
+        
+        $getMicrosoftEntraIDUsersResponse = $null
+        $getMicrosoftEntraIDUsersResponse = Invoke-RestMethod @getMicrosoftEntraIDUsersSplatParams
+    
+        # Select only specified properties to limit memory usage
+        $getMicrosoftEntraIDUsersResponse.Value = $getMicrosoftEntraIDUsersResponse.Value | Select-Object $propertiesToSelect
+
+        if ($getMicrosoftEntraIDUsersResponse.Value -is [array]) {
+            [void]$microsoftEntraIDUsers.AddRange($getMicrosoftEntraIDUsersResponse.Value)
+        }
+        else {
+            [void]$microsoftEntraIDUsers.Add($getMicrosoftEntraIDUsersResponse.Value)
+        }
+    } while (-not[string]::IsNullOrEmpty($getMicrosoftEntraIDUsersResponse.'@odata.nextLink'))
+    Write-Information "Queried Microsoft Entra ID Users matching filter [$filter]. Result count: $(@($microsoftEntraIDUsers).Count)"
+
+    # Send results to HelloID
+    $actionMessage = "sending results to HelloID"
+    $microsoftEntraIDUsers | ForEach-Object {
+        Write-Output $_
     }
 }
 catch {
@@ -367,16 +266,6 @@ catch {
         $auditMessage = "Error $($actionMessage). Error: $($ex.Exception.Message)"
         $warningMessage = "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($ex.Exception.Message)"
     }
-
-    $Log = @{
-        Action            = "DeleteResource" # optional. ENUM (undefined = default) 
-        System            = "EntraID" # optional (free format text) 
-        Message           = $auditMessage # required (free format text) 
-        IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
-        TargetDisplayName = $displayName # optional (free format text) 
-        TargetIdentifier  = $([string]$id) # optional (free format text) 
-    }
-    Write-Information -Tags "Audit" -MessageData $log
     Write-Warning $warningMessage
     Write-Error $auditMessage
 }
