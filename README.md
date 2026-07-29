@@ -2,82 +2,108 @@
 
 | :information_source: Information |
 | :------------------------------- |
-| This repository contains the connector and configuration code only. The implementer is responsible for acquiring the connection details such as username, password, certificate, etc. You might even need to sign a contract or agreement with the supplier before implementing this connector. Please contact the client's application manager to coordinate the connector requirements. |
+| This repository contains the connector and configuration code only. The implementer is responsible for acquiring the connection details such as certificate, tenant ID, and application ID. You might need administrator consent and to configure an App Registration in Microsoft Entra ID before implementing this connector. Please contact the client's application owner to coordinate the requirements. |
 
 ## Description
-_HelloID-Conn-SA-Full-EntraID-MFA-Reset_ is a template designed for use with HelloID Service Automation (SA) Delegated Forms. It can be imported into HelloID and customized according to your requirements.
 
-By using this delegated form, you can reset all MFA methods of a Microsoft Entra ID user. The following options are available:
- 1. Search and select the user
- 2. The task removes the configured authentication methods
+HelloID-Conn-SA-Full-EntraID-MFA-Reset is a delegated form designed for use with HelloID Service Automation (SA). It can be imported into HelloID and customized according to your requirements.
+
+By using this delegated form, you can reset all configured MFA authentication methods for a Microsoft Entra ID user. The following options are available:
+
+1. Search for and select the target Microsoft Entra ID user account (wildcard search by display name, UserPrincipalName, or mail).
+2. The task removes all configured authentication methods for the selected user account.
 
 ## Getting started
 ### Requirements
 
 #### App Registration & Certificate Setup
 
-Before implementing this connector, make sure to configure a Microsoft Entra ID, an App Registration. During the setup process, you’ll create a new App Registration in the Entra portal, assign the necessary API permissions (such as user and group read/write), and generate and assign a certificate.
+Before implementing this connector, make sure to configure a Microsoft Entra ID App Registration. During the setup process, you'll create a new App Registration in the Entra portal, assign the necessary API permissions (such as user and authentication method read/write), and generate and assign a certificate.
 
 Follow the official Microsoft documentation for creating an App Registration and setting up certificate-based authentication:
-- [App-only authentication with certificate (Exchange Online)](https://learn.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps#set-up-app-only-authentication)
+
+- [App-only authentication with certificate](https://learn.microsoft.com/en-us/powershell/exchange/app-only-auth-powershell-v2?view=exchange-ps#set-up-app-only-authentication)
 
 #### HelloID-specific configuration
 
 Once you have completed the Microsoft setup and followed their best practices, configure the following HelloID-specific requirements.
 
 - **API Permissions** (Application permissions):
-  - `User.ReadWrite.All`
-  - `Group.ReadWrite.All`
-  - `GroupMember.ReadWrite.All`
-  - `UserAuthenticationMethod.ReadWrite.All`
-  - `User.EnableDisableAccount.All`
-  - `User-PasswordProfile.ReadWrite.All`
-  - `User-Phone.ReadWrite.All`
-- **Certificate:**
-  - Upload the public key file (.cer) in Entra ID
-  - Provide the certificate as a Base64 string in HelloID. For instructions on creating the certificate and obtaining the base64 string, refer to our forum post: [Setting up a certificate for Microsoft Graph API in HelloID connectors](https://forum.helloid.com/forum/helloid-provisioning/5338-instruction-setting-up-a-certificate-for-microsoft-graph-api-in-helloid-connectors#post5338)
+  - `UserAuthenticationMethod.ReadWrite.All` - To manage user authentication methods
+  - `User.Read.All` - To read user information
+- **Certificate Base64 encoded string:**
+  - Base64 encoded string of the certificate assigned to the app registration. For instructions on creating the certificate and obtaining the base64 string, refer to our forum post: [Setting up a certificate for Microsoft Graph API in HelloID connectors](https://forum.helloid.com/forum/helloid-provisioning/5338-instruction-setting-up-a-certificate-for-microsoft-graph-api-in-helloid-connectors#post5338)
 
 
 ### Connection settings
 
-The following user-defined variables are used by the connector.
+The following global variables must be configured in HelloID when importing and configuring the delegated form.
 
-| Setting                       | Description                                                     | Mandatory |
-| ----------------------------- | --------------------------------------------------------------- | --------- |
-| EntraIdTenantId               | The Directory (tenant) ID in Microsoft Entra ID                 | Yes       |
-| EntraIdAppId                  | The Application (client) ID in Microsoft Entra ID               | Yes       |
-| EntraIdCertificateBase64String| Base64-encoded certificate used for client assertion            | Yes       |
-| EntraIdCertificatePassword    | Password for the provided certificate (if applicable)           | Yes       |
+| Setting                        | Description                                                                | Mandatory |
+| ------------------------------ | -------------------------------------------------------------------------- | --------- |
+| EntraIdTenantId                | The unique identifier (ID) of the tenant in Microsoft Entra ID             | Yes       |
+| EntraIdAppId                   | The unique identifier (ID) of the App Registration in Microsoft Entra ID   | Yes       |
+| EntraIdCertificateBase64String | The Base64-encoded string representation of the app certificate            | Yes       |
+| EntraIdCertificatePassword     | The password associated with the app certificate                           | Yes       |
 
 ## Remarks
 
 ### Supported Authentication Methods
-- This template supports `microsoftAuthenticatorAuthenticationMethod` and `phoneAuthenticationMethod`. Other methods can be added by enriching the task script.
+
+The connector is configured to process the following authentication method types:
+- **Microsoft Authenticator** (`microsoftAuthenticatorAuthenticationMethod`)
+- **Phone Authentication** (`phoneAuthenticationMethod`)
+- **Email Authentication** (`emailAuthenticationMethod`)
+
+Additional authentication methods can be added by extending the `$authenticationMethodsConfig` hashtable at the top of the task script. For a complete list of supported authentication methods, refer to the [Microsoft Graph authentication methods overview](https://learn.microsoft.com/en-us/graph/api/resources/authenticationmethods-overview?view=graph-rest-1.0).
 
 ### Default Method Removal Retry
-- The Graph API does not indicate which method is the default. The task retries removal once when the default method blocks deletion. On retry, the last remaining method is removed. If this also fails, an error is reported.
+
+The Microsoft Graph API does not explicitly indicate which authentication method is set as the user's default. When attempting to remove the default method, the API returns an error indicating it cannot be removed. 
+
+The connector implements an automatic retry mechanism:
+1. On first attempt, all configured methods are removed
+2. If a method fails due to being the default, it is marked for retry
+3. The connector automatically retries removal of failed methods (up to 5 retry attempts)
+4. On retry, the previously default method can typically be removed as another method has become the new default
+
+This also handles the scenario where a phone number cannot be removed without first deleting an alternate mobile number.
+
+### Certificate-Based Authentication
+
+The connector uses certificate-based authentication to generate JSON Web Tokens (JWT) for secure communication with Microsoft Graph API. The certificate is converted from a base64 string and used to sign the JWT assertion for OAuth2 authentication, providing enhanced security compared to client secret authentication.
+
+### Error Handling
+
+- **Configurable Methods**: Only authentication methods defined in `$authenticationMethodsConfig` are processed. Other method types are automatically skipped.
+- **Retry Logic**: Methods that fail due to being the default or other temporary issues are automatically retried with a configurable maximum retry count.
+- **Comprehensive Logging**: All operations are logged with detailed audit messages indicating success or failure, including specific method types and user information.
 
 ## Development resources
 
 ### API endpoints
 
-The following endpoints are used by the connector
+The following Microsoft Graph API endpoints are used by the connector:
 
-| Endpoint                                          | Description                                         |
-| ------------------------------------------------- | --------------------------------------------------- |
-| /users                                            | Retrieve user information                           |
-| /users/{id}/authentication/methods                | List a user's authentication methods                |
-| /users/{id}/authentication/phoneMethods/{methodId}| Remove a phone authentication method                |
-| /users/{id}/authentication/microsoftAuthenticatorMethods/{methodId} | Remove a Microsoft Authenticator method |
+| Endpoint                                                                  | Description                              |
+| ------------------------------------------------------------------------- | ---------------------------------------- |
+| /v1.0/users                                                               | List users                               |
+| /v1.0/users/{id}/authentication/methods                                   | List user authentication methods         |
+| /v1.0/users/{id}/authentication/phoneMethods/{methodId}                   | Remove phone authentication method       |
+| /v1.0/users/{id}/authentication/microsoftAuthenticatorMethods/{methodId}  | Remove Microsoft Authenticator method    |
 
 ### API documentation
 
-- Microsoft Graph: Authentication methods overview: https://learn.microsoft.com/graph/api/resources/authenticationmethods-overview
-- Microsoft Graph: Users API: https://learn.microsoft.com/graph/api/resources/users
+- [List users](https://learn.microsoft.com/en-us/graph/api/user-list)
+- [List authentication methods](https://learn.microsoft.com/en-us/graph/api/authentication-list-methods)
+- [Authentication methods overview](https://learn.microsoft.com/en-us/graph/api/resources/authenticationmethods-overview?view=graph-rest-1.0)
+- [Delete phoneAuthenticationMethod](https://learn.microsoft.com/en-us/graph/api/phoneauthenticationmethod-delete)
+- [Delete microsoftAuthenticatorAuthenticationMethod](https://learn.microsoft.com/en-us/graph/api/microsoftauthenticatorauthenticationmethod-delete)
 
 ## Getting help
-> :bulb: **Tip:**  
-> _For more information on Delegated Forms, please refer to our [documentation](https://docs.helloid.com/en/service-automation/delegated-forms.html) pages_.
+
+> :bulb: **Tip:** For more information on Delegated Forms, please refer to our [documentation](https://docs.helloid.com/en/service-automation/delegated-forms.html) pages.
 
 ## HelloID docs
-The official HelloID documentation can be found at: https://docs.helloid.com/
+
+The official HelloID documentation can be found at: [https://docs.helloid.com/](https://docs.helloid.com/)
