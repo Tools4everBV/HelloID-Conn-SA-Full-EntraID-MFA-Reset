@@ -1,17 +1,46 @@
 # Set TLS to accept TLS, TLS 1.1 and TLS 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
 
+# Global variables
+# Outcommented as these are set from Global Variables
+# $EntraIdTenantId = ""
+# $EntraIdAppId = ""
+# $EntraIdCertificateBase64String = ""
+# $EntraIdCertificatePassword = ""
+
+# Fixed values
+$retryCount = 0
+$retryCountMax = 5
+
+# Authentication methods to process
+# For more information please check https://learn.microsoft.com/en-us/graph/api/resources/authenticationmethods-overview?view=graph-rest-1.0
+$authenticationMethodsConfig = @{
+    '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' = @{
+        Type   = 'microsoftAuthenticatorMethods'
+        Method = 'Microsoft Authenticator'
+    }
+    '#microsoft.graph.phoneAuthenticationMethod'                   = @{
+        Type   = 'phoneMethods'
+        Method = 'Phone Authentication'
+    }
+    '#microsoft.graph.emailAuthenticationMethod'                   = @{
+        Type   = 'emailMethods'
+        Method = 'Email Authentication'
+    }
+}
+
+# Set debug logging
 $VerbosePreference = "SilentlyContinue"
 $InformationPreference = "Continue"
 $WarningPreference = "Continue"
 
-# variables configured in form
+# Variables configured in form
 $userPrincipalName = $form.gridUsers.UserPrincipalName
 $id = $form.gridUsers.Id
 $displayName = $form.gridUsers.DisplayName
 
 #region functions
-function Get-ErrorMessage {
+function Resolve-MicrosoftGraphAPIError {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
@@ -20,33 +49,39 @@ function Get-ErrorMessage {
     )
     process {
         $httpErrorObj = [PSCustomObject]@{
-            ScriptLineNumber    = $ErrorObject.InvocationInfo.ScriptLineNumber
-            Line                = $ErrorObject.InvocationInfo.Line
-            VerboseErrorMessage = $ErrorObject.Exception.Message
-            AuditErrorMessage   = $ErrorObject.Exception.Message
+            ScriptLineNumber = $ErrorObject.InvocationInfo.ScriptLineNumber
+            Line             = $ErrorObject.InvocationInfo.Line
+            ErrorDetails     = $ErrorObject.Exception.Message
+            FriendlyMessage  = $ErrorObject.Exception.Message
         }
         if (-not [string]::IsNullOrEmpty($ErrorObject.ErrorDetails.Message)) {
-            $httpErrorObj.VerboseErrorMessage = $ErrorObject.ErrorDetails.Message
+            $httpErrorObj.ErrorDetails = $ErrorObject.ErrorDetails.Message
         }
         elseif ($ErrorObject.Exception.GetType().FullName -eq 'System.Net.WebException') {
             if ($null -ne $ErrorObject.Exception.Response) {
                 $streamReaderResponse = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
                 if (-not [string]::IsNullOrEmpty($streamReaderResponse)) {
-                    $httpErrorObj.VerboseErrorMessage = $streamReaderResponse
+                    $httpErrorObj.ErrorDetails = $streamReaderResponse
                 }
             }
         }
         try {
-            $errorDetailsObject = ($httpErrorObj.VerboseErrorMessage | ConvertFrom-Json)
-            # Make sure to inspect the error result object and add only the error message as a FriendlyMessage.
-            $httpErrorObj.VerboseErrorMessage = $errorDetailsObject.error
-            $httpErrorObj.AuditErrorMessage = $errorDetailsObject.error.message
-            if ($null -eq $httpErrorObj.AuditErrorMessage) {
-                $httpErrorObj.AuditErrorMessage = $errorDetailsObject.error
+            $errorDetailsObject = ($httpErrorObj.ErrorDetails | ConvertFrom-Json -ErrorAction Stop)
+            if ($errorDetailsObject.error_description) {
+                $httpErrorObj.FriendlyMessage = $errorDetailsObject.error_description
+            }
+            elseif ($errorDetailsObject.error.message) {
+                $httpErrorObj.FriendlyMessage = "$($errorDetailsObject.error.code): $($errorDetailsObject.error.message)"
+            }
+            elseif ($errorDetailsObject.error.details.message) {
+                $httpErrorObj.FriendlyMessage = "$($errorDetailsObject.error.details.code): $($errorDetailsObject.error.details.message)"
+            }
+            else {
+                $httpErrorObj.FriendlyMessage = $httpErrorObj.ErrorDetails
             }
         }
         catch {
-            $httpErrorObj.AuditErrorMessage = $httpErrorObj.VerboseErrorMessage
+            $httpErrorObj.FriendlyMessage = $httpErrorObj.ErrorDetails
         }
         Write-Output $httpErrorObj
     }
@@ -54,17 +89,22 @@ function Get-ErrorMessage {
 
 function Remove-GraphAuthenticationMethod {
     param (
+        [ValidateNotNullOrEmpty()]
         [string]
         $Type,
 
+        [System.Collections.IDictionary]
         $Headers,
 
+        [ValidateNotNullOrEmpty()]
         [string]
         $UserId,
 
+        [ValidateNotNullOrEmpty()]
         [string]
         $MethodId,
 
+        [ValidateNotNullOrEmpty()]
         [bool]
         $Retry
     )
@@ -81,8 +121,13 @@ function Remove-GraphAuthenticationMethod {
             return $true
         }
         catch {
-            if (($_.ErrorDetails.Message -like "*matches the user's current default authentication method*") -and ($Retry -eq $false)) {
-                write-warning "Couldn't revoke authentication method [$Type] [$MethodId] for Entra ID user [$id]. Retrying"
+            if (($_.ErrorDetails.Message -like "*matches the user's current default authentication method*")) {
+                Write-Warning "Couldn't revoke authentication method [$Type] [$MethodId] for Entra ID user [$UserId]. Retrying"
+                # Success is false, retry
+                return $false
+            }
+            elseif (($_.ErrorDetails.Message -like "*without first deleting alternate mobile number*")) {
+                Write-Warning "Couldn't revoke authentication method [$Type] [$MethodId] for Entra ID user [$UserId]. Retrying"
                 # Success is false, retry
                 return $false
             }
@@ -97,7 +142,18 @@ function Get-MSEntraAccessToken {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        $Certificate
+        [ValidateNotNull()]
+        $Certificate,
+        
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $AppId,
+        
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $TenantId
     )
     try {
         # Get the DER encoded bytes of the certificate
@@ -121,9 +177,9 @@ function Get-MSEntraAccessToken {
 
         # Create a JWT payload
         $payload = [Ordered]@{
-            'iss' = "$entraidappid"
-            'sub' = "$entraidappid"
-            'aud' = "https://login.microsoftonline.com/$EntraIdTenantId/oauth2/token"
+            'iss' = "$($AppId)"
+            'sub' = "$($AppId)"
+            'aud' = "https://login.microsoftonline.com/$($TenantId)/oauth2/token"
             'exp' = ($currentUnixTimestamp + 3600) # Expires in 1 hour
             'nbf' = ($currentUnixTimestamp - 300) # Not before 5 minutes ago
             'iat' = $currentUnixTimestamp
@@ -140,25 +196,20 @@ function Get-MSEntraAccessToken {
         $signatureInput = "$base64Header.$base64Payload"
         $signature = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($signatureInput), 'SHA256')
         $base64Signature = [System.Convert]::ToBase64String($signature).Replace('+', '-').Replace('/', '_').Replace('=', '')
-	
-	# Extract the private key from the certificate
-        if (-not $Certificate.HasPrivateKey -or -not $Certificate.PrivateKey) {
-            throw "The certificate does not have a private key."
-        }
 
         # Create the JWT token
         $jwtToken = "$($base64Header).$($base64Payload).$($base64Signature)"
 
         $createEntraAccessTokenBody = @{
             grant_type            = 'client_credentials'
-            client_id             = $entraidappid
+            client_id             = $AppId
             client_assertion_type = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
             client_assertion      = $jwtToken
             resource              = 'https://graph.microsoft.com'
         }
 
         $createEntraAccessTokenSplatParams = @{
-            Uri         = "https://login.microsoftonline.com/$EntraIdTenantId/oauth2/token"
+            Uri         = "https://login.microsoftonline.com/$($TenantId)/oauth2/token"
             Body        = $createEntraAccessTokenBody
             Method      = 'POST'
             ContentType = 'application/x-www-form-urlencoded'
@@ -176,10 +227,20 @@ function Get-MSEntraAccessToken {
 
 function Get-MSEntraCertificate {
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $CertificateBase64String,
+        
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $CertificatePassword
+    )
     try {
-        $rawCertificate = [system.convert]::FromBase64String($EntraIdCertificateBase64String)
-        $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($rawCertificate, $EntraIdCertificatePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+        $rawCertificate = [system.convert]::FromBase64String($CertificateBase64String)
+        $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($rawCertificate, $CertificatePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
         Write-Output $certificate
     }
     catch {
@@ -190,137 +251,102 @@ function Get-MSEntraCertificate {
 
 
 try {
-    # Setup Connection with Entra/Exo
-    Write-Verbose 'connecting to MS-Entra'
-    $certificate = Get-MSEntraCertificate
-    $entraToken = Get-MSEntraAccessToken -Certificate $certificate
-    
-    #Add the authorization header to the request
-    $authorization = @{
-        Authorization = "Bearer $entraToken";
-        'Content-Type' = "application/json";
-        Accept = "application/json";
-    }
- 
-    #endregion Create authorization headers
-  
-    #region Get authentication methods
-    $actionMessage = "getting authentication methods"
+    # Convert base64 certificate string to certificate object
+    $actionMessage = "converting base64 certificate string to certificate object"
+    $certificate = Get-MSEntraCertificate -CertificateBase64String $EntraIdCertificateBase64String -CertificatePassword $EntraIdCertificatePassword
+    Write-Verbose "Converted base64 certificate string to certificate object"
 
-    Write-Verbose "Getting authentication methods"
+    # Create access token
+    $actionMessage = "creating access token"
+    $entraToken = Get-MSEntraAccessToken -Certificate $certificate -AppId $EntraIdAppId -TenantId $EntraIdTenantId
+
+    # Create headers
+    $actionMessage = "creating headers"
+    $headers = @{
+        "Authorization"    = "Bearer $($entraToken)"
+        "Accept"           = "application/json"
+        "Content-Type"     = "application/json"
+        "ConsistencyLevel" = "eventual" # Needed to filter on specific attributes (https://docs.microsoft.com/en-us/graph/aad-advanced-queries)
+    }
+
+    # Get authentication methods
+    $actionMessage = "getting authentication methods for user [$userPrincipalName] with id [$id]"
 
     $splatParamsGetAuthenticator = @{
         Method  = 'Get'
         Uri     = "https://graph.microsoft.com/v1.0/users/$id/authentication/methods"
-        Headers = $authorization
+        Headers = $headers
     }
     $responseGetAuthenticator = Invoke-RestMethod @splatParamsGetAuthenticator -Verbose:$false
-  
-    # Check if the response contains Microsoft Authenticator method
-    $microsoftAuthenticatorMethod = $responseGetAuthenticator.value | Where-Object { $_.'@odata.type' -eq "#microsoft.graph.microsoftAuthenticatorAuthenticationMethod" }
+    Write-Information "Queried authentication methods for Entra ID user [$userPrincipalName] with id [$id]. Total result count: $(($responseGetAuthenticator.value | Measure-Object).Count)"
 
-    # Check if the response contains Phone Authentication method
-    $phoneAuthenticatorMethod = $responseGetAuthenticator.value | Where-Object { $_.'@odata.type' -eq "#microsoft.graph.phoneAuthenticationMethod" }
+    # Filter authenticators based on configured authentication methods
+    $configuredTypes = ($authenticationMethodsConfig.Values | ForEach-Object { $_.Method }) -join ', '
+    $actionMessage = "filtering authentication methods to configured types [$configuredTypes] for Entra ID user [$userPrincipalName] with id [$id]"
+    $authenticators = $responseGetAuthenticator.value | Where-Object { $authenticationMethodsConfig.ContainsKey($_.'@odata.type') }
+    Write-Information "Filtered authentication methods to configured types [$configuredTypes] for Entra ID user [$userPrincipalName] with id [$id]. Result count: $(($authenticators | Measure-Object).Count)"
 
-    Write-Information "Authentication methods successfully queried for Entra ID user [$userPrincipalName] [$id] successfully"
-    #endregion Get authentication methods
+    # Delete authentication methods with retry logic
+    $actionMessage = "deleting authentication methods for user [$userPrincipalName] with id [$id]"
+    $authenticators | Add-Member -MemberType NoteProperty -Name "retry" -Value $false -Force
+    $authenticators | Add-Member -MemberType NoteProperty -Name "success" -Value $false -Force
+    do {
+        $doUntilSuccess = $true
+        foreach ($authenticator in $authenticators) {
+            $methodId = $authenticator.id
 
-    #region Delete Phone Authentication method
-    $actionMessage = "removing Phone Authentication method"
-
-    if ($phoneAuthenticatorMethod) {
-        Write-Verbose "Deleting current Phone Authentication method [$($phoneAuthenticatorMethod.phoneType)] with value [$($phoneAuthenticatorMethod.phoneNumber)] for account with id [$($id)]"
-
-        $splatParamsDelMicrosoftAuthenticator = @{
-            Type     = 'phoneMethods'
-            Headers  = $authorization
-            UserId   = $id
-            MethodId = $phoneAuthenticatorMethod.id   
-            Retry    = $false            
-        }
-
-        $phoneAuthenticatorMethodSuccess = Remove-GraphAuthenticationMethod @splatParamsDelMicrosoftAuthenticator
-
-        if ($phoneAuthenticatorMethodSuccess) {
-            Write-Information "Deleting current Phone Authentication method for Entra ID user [$userPrincipalName] [$id] successfully"
-
-            $Log = @{
-                Action            = "DeleteResource" # optional. ENUM (undefined = default) 
-                System            = "Entra ID" # optional (free format text) 
-                Message           = "Deleting current Phone Authentication method for Entra ID user [$userPrincipalName] [$id] successfully" # required (free format text) 
-                IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
-                TargetDisplayName = $displayName # optional (free format text) 
-                TargetIdentifier  = $([string]$id) # optional (free format text) 
+            # Get authentication method configuration
+            $authConfig = $authenticationMethodsConfig[$authenticator.'@odata.type']
+            if ($null -ne $authConfig) {
+                $type = $authConfig.Type
+                $method = $authConfig.Method
             }
-            #send result back  
-            Write-Information -Tags "Audit" -MessageData $log
-        }
-    }
-    else {
-        Write-Verbose "No Microsoft Authenticator method found for user [$id] [$userPrincipalName]"       
-    }
-
-    #endregion Delete Phone Authentication method
-
-    #region Delete Microsoft Authenticator method
-    $actionMessage = "removing Microsoft Authenticator method"
-
-    if ($microsoftAuthenticatorMethod) {
-        Write-Verbose "Deleting current Microsoft Authenticator method for account with id [$($id)]"
-
-        $splatParamsDelMicrosoftAuthenticator = @{
-            Type     = 'microsoftAuthenticatorMethods'
-            Headers  = $authorization
-            UserId   = $id
-            MethodId = $microsoftAuthenticatorMethod.id 
-            Retry    = $false             
-        }
-
-        $microsoftAuthenticatorMethodSuccess = Remove-GraphAuthenticationMethod @splatParamsDelMicrosoftAuthenticator
-
-        if ($microsoftAuthenticatorMethodSuccess) {
-            Write-Information "Deleting current Microsoft Authenticator method for Entra ID user [$userPrincipalName] [$id] successfully"
-
-            $Log = @{
-                Action            = "DeleteResource" # optional. ENUM (undefined = default) 
-                System            = "Entra ID" # optional (free format text) 
-                Message           = "Deleting current Microsoft Authenticator method for Entra ID user [$userPrincipalName] [$id] successfully" # required (free format text) 
-                IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
-                TargetDisplayName = $displayName # optional (free format text) 
-                TargetIdentifier  = $([string]$id) # optional (free format text) 
+            else {
+                # If no configured method is found then skip (success = $true)
+                $authenticator.success = $true
+                continue
             }
-            #send result back  
-            Write-Information -Tags "Audit" -MessageData $log
+
+            if (-not $authenticator.success) {
+                $actionMessage = "deleting current $method method for user with id [$($id)]"
+                $actionsNeeded = $true
+
+                $splatParamsDelAuthenticator = @{
+                    Type     = $type
+                    Headers  = $headers
+                    UserId   = $id
+                    MethodId = $methodId 
+                    Retry    = $authenticator.retry         
+                }
+
+                $authenticator.success = Remove-GraphAuthenticationMethod @splatParamsDelAuthenticator
+
+                if ($authenticator.success) {
+                    $Log = @{
+                        Action            = "DeleteResource" # optional. ENUM (undefined = default) 
+                        System            = "EntraID" # optional (free format text) 
+                        Message           = "Deleted current $method method for Entra ID user [$userPrincipalName] with id [$id]" # required (free format text) 
+                        IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+                        TargetDisplayName = $displayName # optional (free format text) 
+                        TargetIdentifier  = $([string]$id) # optional (free format text) 
+                    }
+                    #send result back  
+                    Write-Information -Tags "Audit" -MessageData $log
+                }
+                else {
+                    $authenticator.retry = $true
+                    $retryCount++
+                    $doUntilSuccess = $false
+                }
+            }
         }
-    }
-    else {
-        Write-Verbose "No Microsoft Authenticator method found for user [$id] [$userPrincipalName]"
-    }
+    } until ($doUntilSuccess -or $retryCount -gt $retryCountMax)
 
-    #endregion Delete Microsoft Authenticator method
-
-    #region Delete Phone Authentication method retry
-    $actionMessage = "removing Phone Authentication method retry"
-
-    if ($phoneAuthenticatorMethodSuccess -eq $false) {
-        Write-Verbose "Retry deleting current Phone Authentication method [$($phoneAuthenticatorMethod.phoneType)] with value [$($phoneAuthenticatorMethod.phoneNumber)] for account with id [$($id)]"
-
-        $splatParamsDelMicrosoftAuthenticator = @{
-            Type     = 'phoneMethods'
-            Headers  = $authorization
-            UserId   = $id
-            MethodId = $phoneAuthenticatorMethod.id
-            Retry    = $true            
-        }
-
-        $phoneAuthenticatorMethodSuccess = Remove-GraphAuthenticationMethod @splatParamsDelMicrosoftAuthenticator
-
-        Write-Information "Retry deleting current Phone Authentication method for Entra ID user [$userPrincipalName] [$id] successfully"
-
+    if ($actionsNeeded -ne $true) {
         $Log = @{
             Action            = "DeleteResource" # optional. ENUM (undefined = default) 
-            System            = "Entra ID" # optional (free format text) 
-            Message           = "Retry deleting current Phone Authentication method for Entra ID user [$userPrincipalName] [$id] successfully" # required (free format text) 
+            System            = "EntraID" # optional (free format text) 
+            Message           = "No authentication method found that needs to be deleted for Entra ID user [$userPrincipalName] with id [$id]" # required (free format text) 
             IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
             TargetDisplayName = $displayName # optional (free format text) 
             TargetIdentifier  = $([string]$id) # optional (free format text) 
@@ -328,76 +354,29 @@ try {
         #send result back  
         Write-Information -Tags "Audit" -MessageData $log
     }
-
-    #endregion Delete Phone Authentication method retry
-
-    #region Delete Microsoft Authenticator method retry
-    $actionMessage = "removing Microsoft Authenticator method retry"
-
-    if ($microsoftAuthenticatorMethodSuccess -eq $false) {
-        Write-Verbose "Retry deleting current Microsoft Authenticator method for account with id [$($id)]"
-
-        $splatParamsDelMicrosoftAuthenticator = @{
-            Type     = 'microsoftAuthenticatorMethods'
-            Headers  = $authorization
-            UserId   = $id
-            MethodId = $microsoftAuthenticatorMethod.id    
-            Retry    = $true          
-        }
-
-        $microsoftAuthenticatorMethodSuccess = Remove-GraphAuthenticationMethod @splatParamsDelMicrosoftAuthenticator
-
-        Write-Information "Retry deleting current Microsoft Authenticator method for Entra ID user [$userPrincipalName] [$id] successfully"
-
-        $Log = @{
-            Action            = "DeleteResource" # optional. ENUM (undefined = default) 
-            System            = "Entra ID" # optional (free format text) 
-            Message           = "Retry deleting current Microsoft Authenticator method for Entra ID user [$userPrincipalName] [$id] successfully" # required (free format text) 
-            IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
-            TargetDisplayName = $displayName # optional (free format text) 
-            TargetIdentifier  = $([string]$id) # optional (free format text) 
-        }
-        #send result back  
-        Write-Information -Tags "Audit" -MessageData $log
-    }
-
-    #endregion Delete Microsoft Authenticator method retry
-
-    #region no results found end of script
-    $actionMessage = "no results found end of script"
-    
-    if (($microsoftAuthenticatorMethod -eq $null) -and ($phoneAuthenticatorMethod -eq $null)) {
-        Write-Information "No Microsoft Authenticator method and Phone Authentication method found for Entra ID user [$userPrincipalName] [$id]"
-
-        $Log = @{
-            Action            = "DeleteResource" # optional. ENUM (undefined = default) 
-            System            = "Entra ID" # optional (free format text) 
-            Message           = "No Microsoft Authenticator method and Phone Authentication method found for Entra ID user [$userPrincipalName] [$id]" # required (free format text) 
-            IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
-            TargetDisplayName = $displayName # optional (free format text) 
-            TargetIdentifier  = $([string]$id) # optional (free format text) 
-        }
-        #send result back  
-        Write-Information -Tags "Audit" -MessageData $log
-    }
-
-    #endregion no results found end of script
 }
 catch {
     $ex = $PSItem
-    $errorMessage = Get-ErrorMessage -ErrorObject $ex
-
-    Write-Verbose "Error at Line [$($errorMessage.InvocationInfo.ScriptLineNumber)]: $($errorMessage.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))" 
-    Write-Error "Error $actionMessage for Entra ID user [[$userPrincipalName] [$id]. Error: $($errorMessage.AuditErrorMessage)"
+    if ($($ex.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') -or
+        $($ex.Exception.GetType().FullName -eq 'System.Net.WebException')) {
+        $errorObj = Resolve-MicrosoftGraphAPIError -ErrorObject $ex
+        $auditMessage = "Error $($actionMessage). Error: $($errorObj.FriendlyMessage)"
+        $warningMessage = "Error at Line [$($errorObj.ScriptLineNumber)]: $($errorObj.Line). Error: $($errorObj.ErrorDetails)"
+    }
+    else {
+        $auditMessage = "Error $($actionMessage). Error: $($ex.Exception.Message)"
+        $warningMessage = "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($ex.Exception.Message)"
+    }
 
     $Log = @{
         Action            = "DeleteResource" # optional. ENUM (undefined = default) 
-        System            = "Entra ID" # optional (free format text) 
-        Message           = "Error $actionMessage for Entra ID user [$userPrincipalName] [$id]. Error: $($errorMessage.AuditErrorMessage)" # required (free format text) 
+        System            = "EntraID" # optional (free format text) 
+        Message           = $auditMessage # required (free format text) 
         IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
         TargetDisplayName = $displayName # optional (free format text) 
         TargetIdentifier  = $([string]$id) # optional (free format text) 
     }
-    #send result back  
     Write-Information -Tags "Audit" -MessageData $log
+    Write-Warning $warningMessage
+    Write-Error $auditMessage
 }
