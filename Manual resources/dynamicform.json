@@ -1,71 +1,86 @@
 [
-  {
-    "label": "Select user account",
-    "fields": [
-      {
-        "key": "searchfield",
-        "templateOptions": {
-          "label": "Search",
-          "placeholder": "Username or email address"
-        },
-        "type": "input",
-        "summaryVisibility": "Hide element",
-        "requiresTemplateOptions": true,
-        "requiresKey": true,
-        "requiresDataSource": false
-      },
-      {
-        "key": "gridUsers",
-        "templateOptions": {
-          "label": "Select user",
-          "required": true,
-          "grid": {
-            "columns": [
-              {
-                "headerName": "Display Name",
-                "field": "DisplayName"
-              },
-              {
-                "headerName": "User Principal Name",
-                "field": "UserPrincipalName"
-              },
-              {
-                "headerName": "Title",
-                "field": "Title"
-              },
-              {
-                "headerName": "Department",
-                "field": "Department"
-              },
-              {
-                "headerName": "Company",
-                "field": "Company"
-              }
-            ],
-            "height": 300,
-            "rowSelection": "single"
-          },
-          "dataSourceConfig": {
-            "dataSourceGuid": "$dataSourceGuid_0",
-            "input": {
-              "propertyInputs": [
-                {
-                  "propertyName": "searchUser",
-                  "otherFieldValue": {
-                    "otherFieldKey": "searchfield"
-                  }
-                }
-              ]
-            }
-          },
-          "allowCsvDownload": true
-        },
-        "type": "grid",
-        "summaryVisibility": "Show",
-        "requiresTemplateOptions": true,
-        "requiresKey": true,
-        "requiresDataSource": true
-      }
-    ]
-  }
+    {
+        "label":  "Select user account",
+        "fields":  [
+                       {
+                           "key":  "searchfield",
+                           "templateOptions":  {
+                                                   "label":  "Search field (wildcard search in Display name, UserPrincipalName and mail)",
+                                                   "placeholder":  "Display name, UserPrincipalName, or mail (use * to search all users)",
+                                                   "required":  true,
+                                                   "minLength":  1
+                                               },
+                           "type":  "input",
+                           "summaryVisibility":  "Hide element",
+                           "requiresTemplateOptions":  true,
+                           "requiresKey":  true,
+                           "requiresDataSource":  false
+                       },
+                       {
+                           "key":  "gridUsers",
+                           "templateOptions":  {
+                                                   "label":  "Select user",
+                                                   "required":  true,
+                                                   "grid":  {
+                                                                "columns":  [
+                                                                                {
+                                                                                    "headerName":  "Display Name",
+                                                                                    "field":  "displayName"
+                                                                                },
+                                                                                {
+                                                                                    "headerName":  "User Principal Name",
+                                                                                    "field":  "userPrincipalName"
+                                                                                },
+                                                                                {
+                                                                                    "headerName":  "Mail",
+                                                                                    "field":  "mail"
+                                                                                },
+                                                                                {
+                                                                                    "headerName":  "Description",
+                                                                                    "field":  "description"
+                                                                                },
+                                                                                {
+                                                                                    "headerName":  "Account Enabled",
+                                                                                    "field":  "accountEnabled"
+                                                                                },
+                                                                                {
+                                                                                    "headerName":  "Department",
+                                                                                    "field":  "department"
+                                                                                },
+                                                                                {
+                                                                                    "headerName":  "Job Title",
+                                                                                    "field":  "jobTitle"
+                                                                                },
+                                                                                {
+                                                                                    "headerName":  "Company Name",
+                                                                                    "field":  "companyName"
+                                                                                }
+                                                                            ],
+                                                                "height":  300,
+                                                                "rowSelection":  "single"
+                                                            },
+                                                   "dataSourceConfig":  {
+                                                                            "dataSourceGuid":  "$dataSourceGuid_0",
+                                                                            "input":  {
+                                                                                          "propertyInputs":  [
+                                                                                                                 {
+                                                                                                                     "propertyName":  "searchValue",
+                                                                                                                     "otherFieldValue":  {
+                                                                                                                                             "otherFieldKey":  "searchfield"
+                                                                                                                                         }
+                                                                                                                 }
+                                                                                                             ]
+                                                                                      }
+                                                                        },
+                                                   "allowCsvDownload":  true,
+                                                   "useFilter":  true
+                                               },
+                           "type":  "grid",
+                           "summaryVisibility":  "Show",
+                           "requiresTemplateOptions":  true,
+                           "requiresKey":  true,
+                           "requiresDataSource":  true
+                       }
+                   ]
+    }
 ]
